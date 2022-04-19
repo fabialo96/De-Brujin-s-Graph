@@ -1,0 +1,673 @@
+package gebd.progetto;
+
+
+import java.io.File;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.yarn.webapp.hamlet.HamletSpec._;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.broadcast.Broadcast;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.graphframes.GraphFrame;
+import org.neo4j.driver.AuthToken;
+import org.neo4j.driver.AuthTokens;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Session;
+import org.apache.spark.serializer.JavaSerializer;
+
+
+
+
+import breeze.optimize.FisherDiffFunction;
+import scala.Tuple2;
+import scala.Tuple3;
+import shapeless.newtype;
+
+
+
+public class MainGraphFrame2 {	
+	
+	Session s;
+	JavaSparkContext jsc;
+	JavaPairRDD<String, Tuple2<String, String>> Archi;
+	Dataset<Row> edges;
+	JavaPairRDD<String, Iterable<Tuple3<String, Integer, Integer>>> gbk;
+    int k;
+    JavaPairRDD<String, Tuple3<String,Integer,Integer>> tuple;
+    JavaRDD<Row> edges_after_tips;
+    JavaRDD<Row> edges_before_bubbles;
+	 
+	public void SparkNeo() {		 
+		  /*
+		   * decidiamo di sopprimere tutti questi messaggi
+		   * tranne che nel caso di errori
+		   */
+		  Logger.getLogger("org").setLevel(Level.ERROR);
+		  Logger.getLogger("akka").setLevel(Level.ERROR);
+		  
+		  /* Definiamo la configurazione di Spark
+		   */
+		  
+		  SparkConf sc = new SparkConf();
+		  
+		  /*
+		   * Diamo un nome all'applicazione
+		   */
+		  sc.setAppName("Progetto GEBD");
+		  /*
+		   * tra parentesi quadra [] posso indicare il numero di core da riservare a spark indicandolo tra parentesi quadra.
+		   * * vuol dire "usali tutti"
+		   */
+		  sc.setMaster("local[*]");
+		  
+		  /*
+		   * Una volta definita la configurazione iniziale, * posso avviare Spark attraverso l'oggetto JavaSparkContext
+		   * Dopo la creazione di un oggetto SparkContext, possiamo invocare funzioni come  textFile, sequenceFile, parallelize
+		   * Una volta creato SparkContext, pu� essere utilizzato per  creare RDD, variabile di trasmissione e accumulatore, 
+		   * ingresso del servizio Spark ed esecuzione di processi. Tutte queste cose possono essere eseguite fino all'arresto di SparkContext
+		   */
+		    jsc = new JavaSparkContext(sc);
+		  
+		  /*
+		   * Qui caricher� il file con le sequenze di Stringhe su cui lavorare
+		   */
+		  
+		    JavaRDD<String> Stringhe = jsc.textFile("data/Mini_grafo.txt").filter(s->!s.startsWith(">"));		    
+		  //  System.out.println(Stringhe.count());
+		   		    
+		    /*
+		     * Cancello le cartelle dove sono presenti i k-meri e gli archi della run precedente per evitare messaggi di errori
+		     */
+		    
+		    String direct1 = "C:\\Users\\fabio\\.Neo4jDesktop\\relate-data\\dbmss\\dbms-c4e5d19e-5b60-4bd6-af47-1e2e0e37a7cd\\import\\archi.csv";
+		    try {
+				FileUtils.deleteDirectory(new File(direct1));				
+			} catch (IOException e) {
+				e.printStackTrace();
+			}   	   
+		   
+		  /*
+		   * Il comando flatMap converte le righe in parole, mentre map e reduceByKey contano le singole parole
+		   * Creo i k-meri dai dati appena caricati in Stringhe
+		   * Uso flatmap to pair perch� da una sola sequenza mi aspetto molteplici k-meri
+		   * In tale oggetto sono riportati in prima posizione una stringa che corrisponde al K-mero splittato
+		   * e in seconda posizione la medesima stringa che contiene lo stesso K-mero
+		   */
+		    
+		    JavaPairRDD<String, String> KmeriCompleti = Stringhe.flatMapToPair(new Kmeri4C());		    
+		  //  System.out.println("I Kmeri Beta sono: " + KmeriCompleti.take(1000));
+		  //  System.out.println("I Kmeri Beta sono: " + KmeriCompleti.count());		    		    
+		    
+		    /*
+		     * Elimino k-meri ridondanti con reducebykey, ovvero in prima posizione memorizzo la stessa stringa o K-mero
+		     * che memorizzo nella seconda posizione, ma riduco la frequenza dei kmeri ripetuti 
+		     * Infatti la lunghezza di tale oggetto � pi� piccola di quello sopra
+		     */
+		    
+		    JavaPairRDD<String, String> Kmeri_ridotti = KmeriCompleti.reduceByKey((x,y) -> x+y);		    
+		 //   System.out.println("I Kmeri ridotti sono: " + Kmeri_ridotti.take(279));
+		    System.out.println("I Kmeri ridotti sono: " + Kmeri_ridotti.count());
+		    
+		    JavaRDD<String> Kmeri_used = Kmeri_ridotti.map(x -> x._1);
+		    		    
+		    /*
+		     * Creo k-meri con in chiave il prefisso e in valore la sequenza completa
+		     * Come chiave usa il Kmero senza l'ultima lettera, come valore il Kmero completo
+		     * Legge i valori in ordine
+		     */
+		    
+		    JavaPairRDD<String, String> PrefissoBeta = Kmeri_used.flatMapToPair(new Kmeri4T());		    
+		//    System.out.println("I prefissi Beta sono: " + PrefissoBeta.take(100));
+		//    System.out.println("I prefissi Beta sono: " + PrefissoBeta.count());
+		             
+		    /*
+		     * Creo k-meri con in chiave il suffisso e in valore la sequenza completa
+		     * Come chiave usa il Kmero senza la prima lettera, come valore il Kmero completo
+		     * Legge i valori in ordine
+		     */
+		    
+		    JavaPairRDD<String, String> SuffissoBeta = Kmeri_used.flatMapToPair(new Kmeri4S());		    
+		//    System.out.println("I suffissi Beta sono: " + SuffissoBeta.take(100));
+		//    System.out.println("I suffissi Beta sono: " + SuffissoBeta.count());
+		    		    
+		    /*
+		     * Unisco le due RDD per trovare gli archi, la tupla � formata dal
+		     * k-mero completo di partenza e il k-mero completo di arrivo
+		     */
+		    
+              Archi = SuffissoBeta.join(PrefissoBeta);		    
+		//    System.out.println("Gli archi sono: " + Archi.take(100));
+		//    System.out.println("Gli archi sono: " + Archi.count());
+		    
+	        /*
+		     * Estraggo dalla tupla le sequenze di arrivo e di partenza
+		     */
+		    
+		    JavaPairRDD<String, String> ArchiNeo4j = Archi.mapToPair(x -> new Tuple2<String, String>(x._2._1,x._2._2));		    
+		//    System.out.println("Gli archi NEO4j sono: " + ArchiNeo4j.take(100));
+		      System.out.println("Gli archi NEO4j sono: " + ArchiNeo4j.count());
+		    
+		    /*
+		     * Mi connetto a Neo4j per la creazione del grafo di De Bruijn
+		     */
+		    
+		      String uri = "bolt://localhost:7687";
+				
+				/*
+				 * Forniamo le nostre credenziali di accesso
+				 */
+				AuthToken token = AuthTokens.basic("neo4j", "ciaocomestai");
+				
+
+			
+			/*
+			 * Istanziamo il driver e creiamo la prima connessione
+			 */
+			
+			Driver driver = GraphDatabase.driver(uri, token);
+			
+			/*
+			 * Apriamo una sessione di lavoro
+			 */
+			s = driver.session();
+			
+			/*
+			 * Se siamo connessi a Neo4j segnaliamo l'esito positivo
+			 */
+			
+			System.out.println("Connessione stabilita!");
+			
+		    JavaRDD<String> ArchiCSV = ArchiNeo4j.map(x -> x._1);		    		    
+		  
+		    /*
+			 * Salvo gli archi in un file csv da caricare su Neo4j
+			 */
+		    
+
+
+		    String arg2 = "C:\\Users\\fabio\\.Neo4jDesktop\\relate-data\\dbmss\\dbms-c4e5d19e-5b60-4bd6-af47-1e2e0e37a7cd\\import\\archi.csv";		    
+		    ArchiNeo4j.saveAsTextFile(arg2);
+		    	
+			//---------- ELABORAZIONE GRAFO
+			
+		    /*
+		     * Elimino il precedente grafico
+		     */
+			String svuota = "match(n) detach delete n";
+			s.run(svuota);
+					
+			/*
+			 * Carico gli archi
+			 */
+						
+			String CreaArchi3 = "load csv from 'file:///archi.csv///part-00000' as line "
+					+ "merge (n:Kmero{sequenza:replace(line[0],'(','')}) "
+					+ "merge (p:Kmero{sequenza:replace(line[1],')','')}) "
+					+ "merge (n)-[:relazione]->(p)";
+			
+			String CreaArchi4 = "load csv from 'file:///archi.csv///part-00001' as line "
+					+ "merge (n:Kmero{sequenza:replace(line[0],'(','')}) "
+				    + "merge (p:Kmero{sequenza:replace(line[1],')','')}) "
+					+ "merge (n)-[:relazione]->(p)";	
+			
+			s.run(CreaArchi3);
+			s.run(CreaArchi4);
+					
+			System.out.println("Archi caricati su Neo4j");
+			
+			/*
+			 * Assegnazione propriet� nodi del grafo
+			 */
+			
+			//Pongo archient = 0 ai nodi intermedi
+			
+			String degreeIn = "match ()-[t]->(m) with  m, count(t) as degreein set m.archient = degreein";
+			s.run(degreeIn);
+			
+			//Pongo archient = 0 ai nodi iniziali
+			
+			String degreeIn0 = "MATCH (u) WITH size(()-->(u)) AS degreein,u WHERE degreein=0 set u.archient = 0 ";
+			s.run(degreeIn0);
+			
+			//Pongo archiusc = 0 ai nodi finali
+			String degreeOut = "match (s)-[t]->() with count(t) as degreeout,s set s.archiusc = degreeout";
+			s.run(degreeOut);
+			
+            //Pongo archient = 0 ai nodi iniziali			
+			String degreeout0 = "MATCH (u) WITH size((u)-->()) AS degreeout,u WHERE degreeout=0 set u.archiusc = 0 ";
+			s.run(degreeout0);
+			
+			//Archi sono la somma di archient e archiusc
+			String degree = "Match (n) set n.archi = n.archient + n.archiusc";
+			s.run(degree);
+			
+		    System.out.println("Propriet� assegnate");
+		    
+	}
+
+	
+	public void GraphFrame() {
+		    JavaRDD<GFArchi> ArchiClasse = Archi.map(x -> new GFArchi(x._2._1 ,x._2._2));		    		 
+		    SparkSession spark = SparkSession.builder().appName("Esempio uso Dataframe").config(jsc.getConf()).getOrCreate();		  
+		    Dataset<Row> DatasetArchi = spark.createDataFrame(ArchiClasse, GFArchi.class);		    
+			    
+		        
+		    GraphFrame gf1 = GraphFrame.fromEdges(DatasetArchi);
+		    Dataset<Row> vertices_DF = gf1.vertices();		    
+				   
+		    //crea un dataset con due colonne id e sequenza
+		    
+		    Dataset<Row> inDegree_DF = gf1.inDegrees();		    
+		    
+		    //crea un dataset con due colonne id e indegree
+		    
+		    Dataset<Row> outDegree_DF = gf1.outDegrees();		    
+		    
+		    vertices_DF = vertices_DF.join(inDegree_DF, vertices_DF.col("id").equalTo(inDegree_DF.col("id")), "left_outer").drop(inDegree_DF.col("id"));
+		    vertices_DF = vertices_DF.join(outDegree_DF, vertices_DF.col("id").equalTo(outDegree_DF.col("id")), "left_outer").drop(outDegree_DF.col("id"));		    
+		   
+		    /*
+		     * Per cambiare i valori "null" presenti nel dataset vertices_DF, costruiamo un nuovo dataset
+		     * chiamato filteredData che sostituisce con il valore 0 i valori "null"
+		     */
+			
+		    Dataset<Row> filteredData = vertices_DF.na().fill(0);		    	    
+		    Dataset<Row> digimon = DatasetArchi.join(filteredData, DatasetArchi.col("dst").equalTo(filteredData.col("id"))).drop(DatasetArchi.col("dst"));		    		    
+		    edges = digimon.withColumnRenamed("id", "dst");	    
+		    edges.show();
+		    
+	}	    		    
+	
+	
+	public void Ricerca_Eliminazione_Tips() {
+		
+	        /*
+		     * Creiamo una JavaRDD <String> 
+		     */
+		    
+		    JavaRDD<Row> riga = edges.toJavaRDD();		    
+		    tuple =  riga.mapToPair(t -> new Tuple2<>(t.getString(0), new Tuple3<>( t.getString(1),t.getInt(2),t.getInt(3))));		    
+		    System.out.println("Questo � bi " + tuple.take(100));
+		    JavaPairRDD<String, Tuple3<String, Integer, Integer>>  unione_tips = JavaPairRDD.fromJavaRDD(jsc.emptyRDD());
+		    		    
+	        k = 4;	    
+	                
+            gbk =  tuple.groupByKey();
+            
+            gbk =  gbk.sortByKey();
+            
+	        System.out.println(" Ora lavoro sulle tips ");
+	        System.out.println("  ");
+	        
+	        LocalDateTime now = LocalDateTime.now();
+
+	        for(int i = 1; i < 2*k; i++) {	
+	        	
+	        //	System.out.println(" siamo all'iterazione " + i);
+        		    //E1 sarebbe PAIRRDD che rid� 2 entries    	
+	        	JavaPairRDD<String, Iterable<Tuple3<String, Integer, Integer>>> E1 = gbk.filter(t -> { 
+	             			int counter = 0;
+	             			for(Tuple3<String,Integer,Integer> tuple:t._2) {
+	             				counter++;	             				
+	             			}
+	             			return counter == 2; 
+	        		  });	
+	        	System.out.println(" Questo � E1 " + E1.take(100));
+	        	int counter = (int) E1.count();
+	           	if(counter <= 2) {
+	        		break;
+	        	}
+	        	//E1.filtered sarebbe quei percorsi che hanno 2 entries(E1.filter infatti) e che successivamente
+	        	//ridanno indegree = 1 e outdegree = 0 ovvero sono TIPS
+	        	JavaPairRDD<String, Iterable<Tuple3<String, Integer, Integer>>> E1_filtered = E1.filter(t -> { 	                	 
+	                	    int c = 0;
+	             			for(Tuple3<String,Integer,Integer> tuple:t._2) {	             					             				
+	             				if( tuple._2() == 1 && tuple._3() == 0 ) {	             					
+	             					c++;
+	             				}	             				
+	             			}
+	             			return c == 1;	        
+	            });	   
+	        	System.out.println("Questo � E1_filtered - casi con 2 entries dove ind = 1 & out = 0 " + E1_filtered.take(100));
+	        	//E1_filtered1 hanno 2 entries che pero ridanno outdegree diverso da 0
+	                 JavaPairRDD<String, Iterable<Tuple3<String, Integer, Integer>>>   E1_filtered1 = E1.filter(t -> { 	                	 
+	                	    int s = 0;
+	             			for(Tuple3<String,Integer,Integer> tuple:t._2) {	             					             				
+	             				if( tuple._3() != 0 ) {	             					
+	             					s++;
+	             				}	             				
+	             			}
+	             			return s == 2;	        
+	        });	   
+	                 System.out.println("Questo � E1_filtered1 - casi con 2 entries con out diverso da 0 " + E1_filtered1.take(100));
+	                 JavaPairRDD<String, Tuple3<String, Integer, Integer>>  E2 = JavaPairRDD.fromJavaRDD(jsc.emptyRDD());
+	             	 JavaPairRDD<String, Tuple3<String, Integer, Integer>>  E3 = JavaPairRDD.fromJavaRDD(jsc.emptyRDD());  
+	                 	                 
+	         if(i == 1) {
+	        	 
+	        	 System.out.println("STAMPE DELLA ITERAZIONE 1");
+	             E2 = E1_filtered1.flatMapToPair(new Flatmap());  
+	             System.out.println(" Questo � E2 - ovvero rid� pairRDD che hanno 2 entries ma alla prima iterazione hanno outdegree diverso da 0 e quindi sono tips " + E2.take(100));
+	 		     E3 = E1_filtered.flatMapToPair(new Flatmap_tips1()); 
+	 		     System.out.println("Questo � E3 ovvero rid� pairRDD che hanno 2 entries e succesivamente outdegree = 1 e quindi sono TIPS " + E3.take(100));
+		         unione_tips = E3;
+		         
+		         gbk = gbk.subtractByKey(E1_filtered);
+		         System.out.println("Questo � gsg.substract con E1_filtered(tips alla prima iterazione)" + gbk.take(100));
+		         gbk = gbk.subtractByKey(E1_filtered1);
+		         System.out.println("Questo � gsg.substract con E1_filtered1(non ancora TIPS-siamo alla prima iterazione)" +gbk.take(100));
+		         
+		         JavaPairRDD<String, Tuple3<String, Integer, Integer>> sd =
+		        		 gbk.flatMapToPair(new From_Iter_to_Tuple3());
+		         System.out.println("Questo � sd ovvero gsg con FLATMAPTOPAIR" + sd.take(100));
+		         sd = sd.union(E2);
+		         System.out.println("Questo � sd dopo UNION con E2" + sd.take(100));
+		         gbk =  sd.sortByKey().groupByKey();
+		         System.out.println("Questo � gsg con sd che fa sia sortByKey & groupByKey" + gbk.take(100));
+		         System.out.println("Finite stampe della prima iterazione,successivamente si passa alle restanti n-1 iterazioni");
+		         
+	         }	
+	         
+	         else if(i == k*2-1) {   
+		 		     E3 = E1_filtered.flatMapToPair(new Flatmap_tips1()); 
+		 		     System.out.println("Questo � E3 alla penultima iterazione" + E3.take(100));
+		 		     System.out.println("");
+		 		     unione_tips = unione_tips.union(E3);
+		 		     System.out.println("Le tips sono : " + unione_tips.take(100));
+		 		     break;
+		         }
+	         else {	  	        	 
+	             E2 = E1_filtered1.flatMapToPair(new Flatmap1());         	                    	  
+	             System.out.println("Questo � E2 alle restanti iterazioni tranne la prima e penultima " + E2.take(100));
+		 	     E3 = E1_filtered.flatMapToPair(new Flatmap1()); 	 
+		 	     System.out.println("Questo � E3 alle restanti iterazioni tranne la prima e penultima " + E3.take(100));
+		 	     unione_tips = unione_tips.union(E3);   		         
+			     
+		 	     gbk = gbk.subtractByKey(E1_filtered);
+		 	     System.out.println("Questo � gbk=gbk.substractbykey(E1_filtered) alle restanti iterazioni tranne la prima e la penultima" + gbk.take(100));
+		         gbk = gbk.subtractByKey(E1_filtered1);
+		 	     System.out.println("Questo � gbk=gbk.substractbykey(E1_filtered1) alle restanti iterazioni tranne la prima e la penultima" + gbk.take(100));
+		         JavaPairRDD<String, Tuple3<String, Integer, Integer>> sd = gbk.flatMapToPair(new From_Iter_to_Tuple3());
+		         System.out.println("Questo � sd alle restanti iterazioni tranne la prima e la penultima => sd = gbk.flatmaptopair(new from iter to tuple3)" + sd.take(100));
+		         sd = sd.union(E2);
+		         System.out.println("Questo � sd = sd.union(E2) alle restanti iteazioni tranne la prima e la penutlima" + sd.take(100));
+		         
+		         gbk =  sd.sortByKey().groupByKey();
+		         System.out.println("Questo � gbk alle restanti iterazioni tranne la prima e la penultima = sd.sort.group" + gbk.take(100));
+	         } 	         	   	 	         	  
+	     }	
+	        
+	        LocalDateTime after = LocalDateTime.now();  
+			
+			   System.out.print(now.getMinute() + " minuti ");
+			   System.out.print(" & ");
+			   System.out.print(now.getSecond() + " secondi dall'inizio TIPS");
+			   
+			   System.out.println("       ");
+			   
+			   System.out.print(after.getMinute() + " minuti ");
+			   System.out.print(" & ");
+			   System.out.print(after.getSecond() + " secondi finale TIPS ") ;
+			  
+			   System.out.println("   ");
+			
+			   
+	        System.out.println(" Risultato tips. Ci sono : " + unione_tips.count() + " tips ");
+	        System.out.println("Le tips sono : " + unione_tips.take(100));
+	        
+	        
+	        
+	        JavaRDD<Tuple3<String,Integer,Integer>> tips2 = unione_tips.map(t -> t._2);    
+	        JavaRDD<String> tips3 = tips2.map(t -> t._1());
+	     	
+	        System.out.println("Questi sono i percorsi delle tips " + tips3.take(100));
+	        
+	        /*
+	         * Con questa classe considero solo i nodi della tips,non i nodi legati al grafo principale
+	         */
+	        
+	        JavaRDD<String> RDD_tips = tips3.flatMap(new Lista_nodi_tips());
+	        System.out.println("Qui abbiamo i nodi delle tips che devono essere eliminati " + RDD_tips.take(100));
+	        
+	        List<String> lista_tips = RDD_tips.collect();	  
+	        int length = lista_tips.size();
+		    System.out.println("Si hanno " + length + " nodi da eliminare ");
+		        
+		    
+	        Broadcast<List<String>>  tips_Br =  jsc.broadcast(lista_tips);
+	        System.out.println("Questo � il broadcast" + tips_Br.getValue());
+	   
+	        
+	         edges_after_tips =  riga.filter(t -> { 	        	        	
+	            List<String>  ddList =	tips_Br.getValue();	     
+	            return!(ddList.contains(t.getString(0)) || ddList.contains(t.getString(1)));	        	
+	        });
+	         
+		        int length1 = (int) edges_after_tips.count();
+			    System.out.println("Sono rimaste " + length1 + " relazioni " );
+			    System.out.println("La lista � " + edges_after_tips.take(100));
+        }
+	    
+	
+	
+	public void Ricerca_Eliminazione_Bubbles() {
+	
+	       tuple = JavaPairRDD.fromJavaRDD(jsc.emptyRDD());
+	       gbk = JavaPairRDD.fromJavaRDD(jsc.emptyRDD());
+	       
+	       JavaPairRDD<String, Tuple3<String,Integer,Integer>> tupli =  edges_after_tips.mapToPair(t -> new Tuple2<>(t.getString(0), new Tuple3<>(t.getString(1),t.getInt(2),t.getInt(3))));
+	       JavaPairRDD<String, Tuple3<String, Integer, Integer>>  unione_bubbles = JavaPairRDD.fromJavaRDD(jsc.emptyRDD());    	       
+	       gbk =  tupli.groupByKey();
+           gbk =  gbk.sortByKey();	 
+	       System.out.println(" Questo � gbk quindi groupandsort dopo aver fatto tips " + gbk.take(100));
+           
+	       System.out.println(" Ora lavoro sulle bubbles ");
+	       System.out.println(" ");
+	     
+	       for(int i = 0; i < k+1; i++) {
+	    	   
+	    	   
+	    	   JavaPairRDD<String, Iterable<Tuple3<String, Integer, Integer>>> E1_filtered = JavaPairRDD.fromJavaRDD(jsc.emptyRDD()); 
+   		  
+	        	JavaPairRDD<String, Iterable<Tuple3<String, Integer, Integer>>>	 E1 = gbk.filter(t -> { 
+		             			int counter = 0;
+		             			for(Tuple3<String,Integer,Integer> tuple:t._2) {
+		             				counter++;	             				
+		             			}
+		             			return counter == 2; 
+		        		  });
+	        	System.out.println(" E1 con bubbles sarebbe con le 2 entries " +E1.take(100));
+		        	        	
+	        	JavaPairRDD<String, Tuple3<String, Integer, Integer>>  E2 = JavaPairRDD.fromJavaRDD(jsc.emptyRDD()); 
+	        	
+		         if(i == 0) { 	        	 
+			        	    E1_filtered = E1.filter(t -> { 	                	 
+	                	    int c = 0;
+	             			for(Tuple3<String,Integer,Integer> tuple:t._2) {	             					             				
+	             				if( tuple._2() == 1 && tuple._3() == 1) {	             					
+	             					c++;
+	             				}}
+	             			return c == 2;});
+				  System.out.println("Sarebbe prima iterazione - E1_filtered con ind & out = 1"  + E1_filtered.take(100));
+    	    
+			        	    
+		           E2 = E1_filtered.flatMapToPair(new Bubbles_path());   
+		 		   unione_bubbles = unione_bubbles.union(E2);
+		 		   System.out.println("Sarebbe prima iterazione - E2 = E1_filtered.flatmaptopair" + E2.take(100));
+		 		   System.out.println("prima iterazione - unione_bubbles = unione_bubbles.unione(E2) " + unione_bubbles.take(100));
+		         }
+
+                 else if(i == k) {		        	 
+		        	        E1_filtered = E1.filter(t -> { 	                	 
+	                	    int c = 0;
+	             			for(Tuple3<String,Integer,Integer> tuple:t._2) {	             					             				
+	             				if( tuple._2() == 2 ) {	             					
+	             					c++;
+	             				}	             				
+	             			}
+	             			return c == 1;	
+			        	});				        	        
+		           E2 = E1_filtered.flatMapToPair(new path());		     
+		 		   unione_bubbles = unione_bubbles.union(E2);
+		 		   break;
+		         }		       
+		         else {	 		        	 
+			           E1_filtered = E1.filter(t -> { 	                	 
+	               	    int c = 0;
+	            			for(Tuple3<String,Integer,Integer> tuple:t._2) {	             					             				
+	            				if( tuple._2() == 1 && tuple._3() == 1 ) {	             					
+	            					c++;
+	            				}}
+	            			return c == 1;});
+			           System.out.println("ALTRE ITERAZIONI - E1_FILTERED con ind & out =1 " + E1_filtered.take(100));
+			           
+				       E2 = E1_filtered.flatMapToPair(new path());	
+			           System.out.println("ALTRE ITERAZIONI - E2 = E1_filtered(ind e out = 1).flatmaptopair(newpath) " + E2.take(100));
+
+			           unione_bubbles = unione_bubbles.union(E2);
+			           System.out.println("sarebbe unione_bubbles nuova " + unione_bubbles.take(100));
+		         }
+
+			            gbk = gbk.subtractByKey(E1_filtered);
+			            System.out.println("GBK.SUBSTRACTKEY(E1_FILTERED) " + gbk.take(100));
+				        JavaPairRDD<String, Tuple3<String, Integer, Integer>> sd = gbk.flatMapToPair(new From_Iter_to_Tuple3());
+				        System.out.println("SD = gbk.flatmaptopair" + sd.take(100));
+				        sd = sd.union(E2);
+				        System.out.println("sd = sd.union(E2) " + sd.take(100));
+				        
+				        
+				        gbk = sd.sortByKey().groupByKey();
+				        
+				        
+				        
+				        
+			           System.out.println(" gbk = sd.sort.group " + gbk.take(100));
+			            System.out.println("  ");
+	      }   		        	     
+	        System.out.println(" Risultati bolle : " + unione_bubbles.take(1000));
+	        
+	      
+	        	        
+	        //Map per lavorare solo con tuple3	        
+	        JavaRDD<Tuple3<String,Integer,Integer>> bubbles = unione_bubbles.map(t -> t._2);
+	        System.out.println("Map per lavorare solo con tuple3 di unione_bubbles " + bubbles.take(100));
+	        //Map per prendere la stringa della tuple3 che ci interessa	        
+	        JavaRDD<String> bubbles1 = bubbles.map(t -> t._1());
+	        System.out.println("Map per lavorare solo con la stringa della tupla3" + bubbles1.take(100));
+	        
+	        /*
+	         * Con questa classe considero solo i nodi della tips,non i nodi legati al grafo principale
+	         */
+	        
+	        
+	        List<String> lista_bubbles = bubbles1.collect();
+	        System.out.println("Metto le stringhe della tupla3 in una lista");
+	        
+	        List<String> lista_bubbles2 = new ArrayList<String>();
+	        int taglia = lista_bubbles.size();
+	        System.out.println("La taglia della lista bubbles � " + lista_bubbles.size());
+	       
+	        for(int i = 0; i < taglia; i++) {
+	        	String mc = lista_bubbles.get(i);
+	        	int as = mc.length();
+	        	if(as == (2*k+1)) {
+	        		String h = lista_bubbles.get(i);	        		
+	        		lista_bubbles2.add(h);
+
+	        	}} 
+    
+
+	        
+	        List<String> numero_Bubbles = new ArrayList<String>();
+	        List<String> lista_nodi_bolle = new ArrayList<String>();
+	        int taglia2 = lista_bubbles2.size();
+	        
+	       
+	        for(int i=0;i< taglia2 ;i++) {
+	        	String s = lista_bubbles2.get(i);
+	        	System.out.println(s);
+	        	String uno = s.substring(0, k);
+	        	System.out.println(uno);
+	        	//abbiamo i 2 percorsi delle bubbles -> cosi implica che
+	        	//vogliamo le prime 4 string ovvero nodo iniziale da 0 a 4
+	        	String tre = s.substring(k+1, (2*k+1));
+	        	System.out.println(tre);
+	        	//stesso discorso sopra ridammi nodo finale da 5 a 9
+	        	  for(int j=i+1;j<taglia2;j++) {
+	        		  String s1 = lista_bubbles2.get(j);
+	  	        	System.out.println(s1);
+	  	        	  String due = s1.substring(0, k);
+	  	        	System.out.println(due);
+	  	        	String quattro = s1.substring(k+1, (2*k+1));
+	  	        	System.out.println(quattro);
+	  	        	    if(uno.equals(due) && tre.equals(quattro)) {
+	  	        	      List<String> lista_percorsi = new ArrayList<String>();
+		        		  lista_percorsi.add(s);	
+		        		  lista_percorsi.add(s1);
+		        		  
+		        		  System.out.println("ff" + lista_percorsi.get(0));
+		        		  System.out.println("ff" + lista_percorsi.get(1));
+		        		  
+		        		  lista_nodi_bolle.add(lista_percorsi.get(0));
+		        		  numero_Bubbles.add(lista_percorsi.get(0));
+			        	  JavaRDD<String> ss = jsc.parallelize(lista_nodi_bolle);
+			        	  JavaRDD<String> RDD_bubbles = ss.flatMap(new Lista_nodi_Bubbles());
+			    	      lista_nodi_bolle = RDD_bubbles.collect();
+			    	      System.out.println("n" + lista_nodi_bolle.get(0));
+			    	      System.out.println("n" + lista_nodi_bolle.get(1));
+			    	      System.out.println("n" + lista_nodi_bolle.get(2));
+			    	      System.out.println("n" + lista_nodi_bolle.get(3));
+		        	}}}
+	        
+	        
+	        System.out.println("Numero bubbles presenti " + numero_Bubbles.size());
+	        
+	        int lenght3 = lista_nodi_bolle.size();
+	        System.out.println("Si hanno " + lenght3 + " nodi da eliminare ");
+	        
+	        
+	        
+	        
+	        
+	        
+	        
+	        
+	        
+	        Broadcast<List<String>>  bubbles_Br =  jsc.broadcast(lista_nodi_bolle);
+	 	   
+		     JavaRDD<Row>  edeges_after_bubbles =  edges_after_tips.filter(t -> { 	        	        	
+		            List<String>  ddList =	bubbles_Br.getValue();	        	 
+		            return!(ddList.contains(t.getString(0)) || ddList.contains(t.getString(1)));	        	
+		        });		
+	     
+		     
+		     for(Row r : edges_before_bubbles.collect()) {	        	
+		        	System.out.println(" Lista delle relazioni rimanenti : " + r);    	
+		        }
+	         		     
+		 
+		
+	       System.exit(0);
+	}	
+		
+	
+	public static void main(String[] args) 	
+	{		
+		 MainGraphFrame2 ig = new MainGraphFrame2();
+		 ig.SparkNeo();
+		 ig.GraphFrame();
+		 ig.Ricerca_Eliminazione_Tips();
+		 ig.Ricerca_Eliminazione_Bubbles();
+	}
+}
