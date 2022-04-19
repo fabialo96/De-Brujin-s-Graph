@@ -1,0 +1,51 @@
+package gebd.progetto;
+
+
+
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Iterator;
+import scala.Tuple2;
+import scala.Tuple3;
+import org.apache.spark.api.java.function.PairFlatMapFunction;
+
+
+public class path implements PairFlatMapFunction <Tuple2<String, Iterable<Tuple3<String, Integer, Integer>>>, String, Tuple3<String,Integer,Integer>> {
+
+	@Override
+	public Iterator<Tuple2<String, Tuple3<String, Integer, Integer>>> call(
+			Tuple2<String, Iterable<Tuple3<String, Integer, Integer>>> t) throws Exception {
+		
+        List<Tuple2<String, Tuple3<String, Integer, Integer>>> output = new ArrayList<Tuple2<String, Tuple3<String, Integer, Integer>>>();
+        Tuple3<String,Integer,Integer> temp = new Tuple3<String,Integer,Integer>("ff",5,5);
+        String vv = null;
+        int k = 0;  
+       
+            	
+ 			for(Tuple3<String,Integer,Integer> tuple:t._2) {
+ 				
+ 				 				
+ 				String a = tuple._1();
+ 				String b = temp._1().substring(temp._1().length() - 1);
+ 				String c = a + b;
+ 				temp=tuple;	
+ 								 				
+				if(c.contains("f")) {
+					 vv = tuple._1();
+ 				}
+ 				
+				if(k == 1) {					
+					output.add(new Tuple2<>(vv, new Tuple3<>(c, -1, -1)));
+				}
+				else {
+					k++;
+				}
+ 			}
+ 				
+			return output.iterator();
+}
+	}
+	
+	
+	
+	
