@@ -36,7 +36,7 @@ import shapeless.newtype;
 
 
 
-public class MainGraphFrame2 {	
+public class Main {	
 	
 	Session s;
 	JavaSparkContext jsc;
@@ -664,7 +664,7 @@ public class MainGraphFrame2 {
 	
 	public static void main(String[] args) 	
 	{		
-		 MainGraphFrame2 ig = new MainGraphFrame2();
+		 Main ig = new Main();
 		 ig.SparkNeo();
 		 ig.GraphFrame();
 		 ig.Ricerca_Eliminazione_Tips();
