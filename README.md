@@ -1,2 +1,2 @@
 # De-Brujin-s-Graph
-La nostra idea è quella di costruire il Grafo di De Brujin avente determinate proprietà e successivamente eliminare gli errori di sequenziamento che si vengono a creare in questo tipo di grafo ovvero TIPS & BUBBLES.
+The idea is to build the De Brujin Graph with certain properties and then eliminate the sequencing errors that are created in this type of graph like TIPS & BUBBLES.
